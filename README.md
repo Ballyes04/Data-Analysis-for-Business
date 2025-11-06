@@ -1,0 +1,891 @@
+---
+title: "ProjectWork_RsenalofData"
+author: "Federico Pallesi, Tommaso Giannetti & Francesco Costa"
+date: "2025-03-30"
+output: html_document
+editor_options: 
+  markdown: 
+    wrap: sentence
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+Welcome to our Data Analysis for Business project, coded in R.
+We are the **R-senal of Data** and we're extremely proud to share our results after an intensive week of hardworking!
+🚀🚀💪💪
+
+During this coding journey we'll summon from time to time a 4th member to our group, which will help us with coding some visualizations, improvements when reducing the full model and general debugging.
+His name is ***CheatyGPT*** 👾💻.
+Specifically AI took care of the following code chunks:
+
+-   *{r imputation-scatterplot}*
+
+-   *{r log-transformation}*
+
+-   *{r salary-econding}*
+
+-   *{r vglm-backward-loop}*
+
+Coming to the project: the aim is to predict salary levels of baseball players using a dataset based on their individual performance statistics.
+Specifically, the dataset **Hitters** collects data about the 1986-87 season and observations range from in-game career stats to league and division metrics, as well as salary information.
+The main objective is to:
+
+-   **Transform the continuous salary variable into a categorical response**
+
+-   **Build a predictive model** capable of estimating a player’s salary level
+
+-   **Evaluate model’s performance** using randomly chosen cross-validation techniques
+
+-   **Improve the model** by selecting relevant predictors
+
+## a. Generic Formulation of the Model
+
+Multinomial logistic regression is used when the outcome variable is **categorical with more than two levels** ($K > 2$).
+It extends binary logistic regression by modeling the **log-odds** of each category relative to a **reference class**.
+
+Let:
+
+-   $Y \in \{1, 2, ..., K\}$ be the categorical response variable
+
+-   $\mathbf{X} = (X_1, X_2, ..., X_p)$ be the vector of predictor variables
+
+-   $\beta_k$ be the coefficient vector for class $k$, for $k = 1, ..., K-1$ (assuming the $K$-th class as reference)
+
+Then, the multinomial logistic model is expressed as:
+
+$$
+\log \left( \frac{P(Y = k \mid \mathbf{X})}{P(Y = K \mid \mathbf{X})} \right) = \beta_{k0} + \beta_{k1}X_1 + \beta_{k2}X_2 + \cdots + \beta_{kp}X_p \quad \text{for } k = 1, ..., K-1
+$$
+
+The model estimates one equation for each class $k$ (excluding the baseline class $K$), each representing the log-odds of being in class $k$ rather than in the reference class.
+In total, $K - 1$ equations are estimated simultaneously.
+
+### How it Differs from Simple Logistic Regression
+
+The table below summarizes the main differences between **binary logistic regression** and **multinomial logistic regression**:
+
+| **Aspect** | **Binary Logistic Regression** | **Multinomial Logistic Regression** |
+|------------------|-----------------------|-------------------------------|
+| Outcome Variable | $Y \in \{0, 1\}$ | $Y \in \{1, 2, \dots, K\},\ K \geq 3$ |
+| Log-Odds | One equation | $K - 1$ equations (each vs reference class) |
+| Interpretation | Odds of class 1 vs class 0 | Odds of class $k$ vs class $K$ (reference) |
+| Estimation | One coefficient vector $\boldsymbol{\beta}$ | $K - 1$ vectors $\boldsymbol{\beta}_1, \dots, \boldsymbol{\beta}_{K-1}$ |
+| Link Function | Logistic / sigmoid | Softmax |
+| Use Case | Binary classification problems | Multi-class classification (unordered classes) |
+
+## b. Exploratory Data Analysis (EDA)
+
+The **Hitters** dataset contains 20 variables for 317 professional baseball players.
+The first step to a successful EDA is to have a general overview of the **structure of the dataset**, to correctly **assign datatypes** to their corresponding variables and to **impute (if possible) missing values**.
+👾 Looking at this section of the project you'll notice that we're working with copies of the dataset: this was due to our needs of a scaled and imputed versions of it specifically for the EDA.
+When it's time to run models, you'll see us working only with a cleaned version of the original dataset.
+
+```{r load-packages, message=FALSE, warning=FALSE}
+library(ggplot2)
+library(reshape2)
+library(gridExtra)
+library(corrplot)
+```
+
+### Load and inspect data
+
+```{r load-data}
+
+Hitters <- read.csv("Hitters.csv", sep = ";")
+str(Hitters)
+summary(Hitters)
+dim(Hitters)
+```
+
+```{r warning=FALSE}
+
+# Convert Salary to numeric
+Hitters$Salary <- as.numeric(Hitters$Salary)
+
+# Convert categorical variables to factors
+Hitters$League <- as.factor(Hitters$League)
+Hitters$Division <- as.factor(Hitters$Division)
+Hitters$NewLeague <- as.factor(Hitters$NewLeague)
+
+str(Hitters)
+
+# Check for missing values
+colSums(is.na(Hitters))
+
+# Check for duplicated records
+sum(duplicated(Hitters))
+```
+
+### Handling missing values
+
+After noticing a total of 64 NAs sitting in our predicting variable *Salary*, we decide to impute those missing values with **KNN-Imputer**.
+This imputation technique works that it selects the *K* nearest neighbors to the NA and then it computes the mean of those *K* observations.
+We went specifically with this technique as it preserves the distribution of the imputed variable.
+
+```{r clean-data, message=FALSE, warning=FALSE}
+library(VIM)
+
+# Impute missing values with KNN 
+Hitters_imputed <- kNN(Hitters, variable = "Salary", k = 5)
+
+Hitters_imputed <- subset(Hitters_imputed, select = -Salary_imp)
+
+Hitters <- Hitters_imputed
+
+# Check if there are still missing values
+colSums(is.na(Hitters))
+
+Hitters_clean <- Hitters
+```
+
+With this scatter plot we verify that KNN imputation doesn't introduce excessive bias.
+This is not our case because the imputed values aren't wrongly located.
+
+```{r imputation-scatterplot, message=FALSE, warning=FALSE}
+
+Hitters_raw <- read.csv("Hitters.csv", sep = ";")
+Hitters_raw$Salary <- as.numeric(Hitters_raw$Salary)
+
+Hitters_imputed <- Hitters_clean
+
+# Create label to mark imputed values
+Hitters_imputed$Imputed <- ifelse(is.na(Hitters_raw$Salary), "Imputed", "Original")
+
+Hitters_imputed$Index <- 1:nrow(Hitters_imputed)
+
+ggplot(Hitters_imputed, aes(x = Index, y = Salary, color = Imputed)) +
+  geom_point(size = 2, alpha = 0.7) +
+  labs(
+    title = "Salary Values Across Observations",
+    x = "Observation Index",
+    y = "Salary"
+  ) +
+  theme_minimal() +
+  scale_color_manual(values = c("Original" = "steelblue", "Imputed" = "orange"))
+```
+
+### Distribution of Salary after KNN imputation
+
+This distribution shows a strong right-skew, with the **majority of players earning below 500k**.
+While the *median* sits just **under 450k**, the *mean* is higher at approximately **487k**, signaling the influence of a **few high-income outliers** on the overall distribution.
+This imbalance is reflected in the **wide standard deviation of roughly 408k**, and in the extended tail reaching up to a maximum salary of **2.46 million**.
+The overall pattern confirms that **salary remains heavily concentrated among lower-earning players**, with a select few driving the upper end.
+
+```{r}
+
+hist(Hitters_clean$Salary,
+     main = "Salary (Post-Imputation)",
+     xlab = "Salary in thousands of USD",
+     col = "lavender",
+     breaks = 10)
+
+abline(v = median(Hitters_clean$Salary), col = "red", lwd = 3)
+abline(v = mean(Hitters_clean$Salary), col = "black", lwd = 3)
+
+legend("topright",
+       legend = c("Median", "Mean"),
+       lty = 1,
+       col = c("red", "black"),
+       bty = "n")
+
+summary_stats <- data.frame(
+  Mean = mean(Hitters_clean$Salary),
+  SD = sd(Hitters_clean$Salary),
+  Minimum = min(Hitters_clean$Salary),
+  Maximum = max(Hitters_clean$Salary)
+)
+
+rownames(summary_stats) <- c("Salary")
+summary_stats
+```
+
+### Log-transformation of Salary
+
+We decide to apply a log transformation to the salary variable as it helps to reduce the strong skew we saw in the original distribution.
+It pulls in the extreme high values and makes the overall shape more balanced and symmetric.
+This not only makes the data easier to work with but also makes more sense when we later group salaries into categories.
+As we can see from the print now the categories are pretty well balanced.
+
+```{r log-transformation}
+
+# Log-transform Salary
+Hitters$LogSalary <- log(Hitters$Salary)
+
+# Create SalaryLevel
+Hitters$SalaryLevel <- cut(Hitters$LogSalary,
+                           breaks = quantile(Hitters$LogSalary, probs = c(0, 1/3, 2/3, 1), na.rm = TRUE),
+                           labels = c("LowSalary", "MediumSalary", "HighSalary"),
+                           include.lowest = TRUE)
+
+# Check distribution 
+table(Hitters$SalaryLevel)
+
+Hitters$SalaryLevel <- as.factor(Hitters$SalaryLevel)
+```
+
+### Distribution of Log-Transformed Salary
+
+```{r}
+
+# Log-Transformed Salary
+hist(Hitters$LogSalary,
+     main = "Log-Transformed Salary Distribution",
+     xlab = "log(Salary)",
+     col = "lavender",
+     breaks = 10)
+
+abline(v = mean(Hitters$LogSalary), col = "black", lwd = 3)
+abline(v = median(Hitters$LogSalary), col = "red", lwd = 3)
+legend("topright", legend = c("Mean", "Median"), col = c("black", "red"), lty = 1, bty = "n")
+```
+
+### Comparing distributions before and after scaling
+
+The comparison between the two plots shows the effect of standardization on the numeric variables.
+Before scaling, many variables are right-skewed and differ greatly in scale, especially those related to career statistics (`CAtBat`, `CHits`, `CRuns`).
+After scaling, all variables are centered around zero with comparable spread.
+The shape of the distributions remains largely unchanged, as expected with standardization.
+This ensures that each variable contributes fairly to the multinomial logistic regression model without being penalized or overly weighted due to its original magnitude.
+
+```{r dist-before-scaling, fig.width=14, fig.height=10, message=FALSE, warning=FALSE}
+
+num_vars <- sapply(Hitters, is.numeric)
+exclude <- c("Salary", "LogSalary")
+vars_to_plot <- setdiff(names(Hitters)[num_vars], exclude)
+
+# Save original values for plotting
+Hitters_before_scaling <- Hitters
+Hitters_long_before <- melt(Hitters_before_scaling[, vars_to_plot])
+
+# Histograms
+ggplot(Hitters_long_before, aes(x = value)) +
+  geom_histogram(bins = 30, fill = "skyblue", color = "white") +
+  facet_wrap(~variable, scales = "free", ncol = 4) +
+  labs(title = "Distributions of Numeric Variables (Before Scaling)",
+       x = "", y = "Count") +
+  theme_minimal() +
+  theme(strip.text = element_text(size = 10))
+
+```
+
+```{r dist-after-scaling, fig.width=14, fig.height=10, message=FALSE, warning=FALSE}
+
+num_vars <- sapply(Hitters_clean, is.numeric)
+exclude <- c("Salary", "LogSalary")
+vars_to_scale <- setdiff(names(Hitters_clean)[num_vars], exclude)
+vars_to_plot <- vars_to_scale 
+
+# Apply standardization
+Hitters_scaled <- Hitters_clean
+Hitters_scaled[, vars_to_scale] <- scale(Hitters_scaled[, vars_to_scale])
+
+Hitters_long_after <- melt(Hitters_scaled[, vars_to_plot])
+
+# Histograms
+ggplot(Hitters_long_after, aes(x = value)) +
+  geom_histogram(bins = 30, fill = "orange", color = "white", alpha = 0.8) +
+  facet_wrap(~variable, scales = "free", ncol = 4) +
+  labs(title = "Distributions of Numeric Variables (After Scaling)",
+       x = "", y = "Count") +
+  theme_minimal() +
+  theme(strip.text = element_text(size = 10))
+```
+
+## c. Encoding Salary variable
+
+We weren't satisfied with a subset division in 3 different *Salary Levels* so we decide to use a **clustering method** to outline the correct number of levels.
+After playing around with the value of *K*, we find in 5 the right choice.
+As you may notice, the `SalaryLevel5 - High` is unbalanced with respect to the other levels: this perfectly aligns with previous observations.
+🤑
+
+```{r salary-econding}
+
+set.seed(123)
+
+# Perform K-means clustering on log-salary
+clusters <- kmeans(Hitters$LogSalary, centers = 5)
+
+Hitters$SalaryClusterRaw <- as.factor(clusters$cluster)
+
+# Compute mean log-salary
+cluster_means <- aggregate(Hitters$LogSalary, 
+                           by = list(Cluster = Hitters$SalaryClusterRaw), 
+                           FUN = mean)
+
+# Order clusters
+ordered_clusters <- cluster_means$Cluster[order(cluster_means$x)]
+
+# Assign final labels
+Hitters_scaled$SalaryLevel5 <- factor(Hitters$SalaryClusterRaw,
+                               levels = ordered_clusters,
+                               labels = c("Low", "MediumLow", "Medium", "MediumHigh", "High"))
+
+# Check class balance
+table(Hitters_scaled$SalaryLevel5)
+```
+
+## d. Visual inspection
+
+Before diving into modeling, we want to get an insight on how the data behaves and that’s exactly what we do here through two visualizations.
+We start with **boxplots** to explore how a few **numerical variables** vary across our defined salary levels `SalaryLevel5`.
+Variables like `AtBat`, `Hits`, `Years`, and `CRBI` were selected because they intuitively capture player's performance.
+As salary level increases, so do these metrics.
+Players in the `SalaryLevel5 - High` group generally show better stats across the board.
+To complement the numeric view, we also examine **categorical variables**: `League`, `Division`, and `NewLeague` using bar plots.
+These help us understand how salary levels are distributed across different baseball affiliations.
+Interestingly, some categories like `Division` show a noticeable skew: for example, a greater proportion of "W" division players in higher salary brackets.
+
+```{r}
+
+Hitters_scaled$SalaryLevel5 <- factor(Hitters_scaled$SalaryLevel5, 
+                                levels = c("Low", "MediumLow", "Medium", "MediumHigh", "High"))
+
+# Boxplots
+g1 <- ggplot(Hitters_scaled, aes(x = SalaryLevel5, y = AtBat)) + geom_boxplot(fill = "lightblue") + ggtitle("AtBat")
+g2 <- ggplot(Hitters_scaled, aes(x = SalaryLevel5, y = Hits)) + geom_boxplot(fill = "lightgreen") + ggtitle("Hits")
+g3 <- ggplot(Hitters_scaled, aes(x = SalaryLevel5, y = Years)) + geom_boxplot(fill = "salmon") + ggtitle("Years")
+g4 <- ggplot(Hitters_scaled, aes(x = SalaryLevel5, y = CRBI)) + geom_boxplot(fill = "plum") + ggtitle("Career RBIs")
+grid.arrange(g1, g2, g3, g4, ncol = 2)
+
+# Bar plots
+g_league <- ggplot(Hitters_scaled, aes(x = SalaryLevel5, fill = League)) +
+  geom_bar(position = "dodge", width = 0.7) +
+  labs(title = "League", x = "", y = "") +
+  scale_fill_manual(values = c("red", "blue")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.title = element_text(hjust = 0.5))
+
+g_division <- ggplot(Hitters_scaled, aes(x = SalaryLevel5, fill = Division)) +
+  geom_bar(position = "dodge", width = 0.7) +
+  labs(title = "Division", x = "", y = "") +
+  scale_fill_manual(values = c("yellow", "blue")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.title = element_text(hjust = 0.5))
+
+g_newleague <- ggplot(Hitters_scaled, aes(x = SalaryLevel5, fill = NewLeague)) +
+  geom_bar(position = "dodge", width = 0.7) +
+  labs(title = "New League", x = "", y = "") +
+  scale_fill_manual(values = c("orange", "purple")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        plot.title = element_text(hjust = 0.5))
+
+grid.arrange(g_league, g_division, g_newleague, nrow = 2)
+```
+
+### Chi-square testing
+
+To formally assess whether categorical predictors are associated with `SalaryLevel5`, we conduct chi-squared tests.
+Results indicate that only `Division` is significantly associated with salary level (Chi-squared = 12.31, df = 4, p = 0.015), suggesting that the division a player belongs to may influence their salary.
+By contrast, `League` and `NewLeague` did not show statistically significant associations (p \> 0.05), consistent with the more uniform distributions seen in the bar plots.
+Among categorical variables, `Division` appears to have a non-uniform distribution across salary levels.
+`League` and `NewLeague` show more uniform distributions and may have less predictive power.
+
+```{r}
+
+chisq_league <- chisq.test(table(Hitters_scaled$SalaryLevel5, Hitters$League))
+
+chisq_division <- chisq.test(table(Hitters_scaled$SalaryLevel5, Hitters$Division))
+
+chisq_newleague <- chisq.test(table(Hitters_scaled$SalaryLevel5, Hitters$NewLeague))
+
+chisq_league
+chisq_division
+chisq_newleague
+```
+
+Straightaway we see the presence of **strong positive correlations** among several performance-related statistics.
+For example, variables such as `AtBat`, `Hits`, `Runs`, and `Walks` are tightly connected, with correlation values often exceeding 0.9.
+This isn’t surprising because players who step up to the plate more frequently tend to score more runs and collect more hits and walks.
+However, from a modeling perspective, this signals **redundancy**: including all of them in the same model could introduce multicollinearity.
+Looking further, we notice a similar pattern among the **career stats**: `CRuns`, `CRBI`, `CWalks`, `CHits`, and `CAtBat` are almost perfectly correlated.
+This makes sense, as career totals grow hand-in-hand over time, but again, they likely lead to overlapping situations.
+Turning to the relationship with `Salary`, a handful of predictors exhibit **moderate positive associations** notably `RBI`, `Hits`, `HmRun`, and `Walks`.
+
+```{r corr-matrix, fig.width=12, fig.height=10}
+
+num_vars <- sapply(Hitters_scaled, is.numeric)
+cor_matrix <- cor(Hitters_scaled[, num_vars], use = "complete.obs")
+
+# Correlation Matrix
+corrplot(cor_matrix,
+         method = "color",
+         type = "upper",
+         order = "hclust",
+         addCoef.col = "black",
+         number.cex = 0.9,
+         tl.col = "black",
+         tl.srt = 30,           
+         tl.cex = 1.1,
+         cl.cex = 0.9,
+         col = colorRampPalette(c("red", "white", "blue"))(200),
+         mar = c(2, 2, 2, 2))   
+```
+
+After the correlation matrix we decide to plot a couple more boxplots to look for other possible interesting insights.
+We notice that higher salary groups consistently display higher medians and wider ranges, particularly for career achievements, indicating their relevance as predictors.
+We do observe the presence of outliers but this can be explained by the nature of the dataset: in every sport there exists a stratum of elite players that introduce a gap with respect to their teammates and opponents.
+⚾ 🏆 Therefore we decide to avoid any outliers managing...😁
+
+```{r}
+
+## Boxplots
+g1 <- ggplot(Hitters_scaled, aes(x = SalaryLevel5, y = CRuns)) + 
+  geom_boxplot(fill = "lightblue") + ggtitle("Career Runs")
+
+g2 <- ggplot(Hitters_scaled, aes(x = SalaryLevel5, y = CHits)) + 
+  geom_boxplot(fill = "lightgreen") + ggtitle("Career Hits")
+
+g3 <- ggplot(Hitters_scaled, aes(x = SalaryLevel5, y = CWalks)) + 
+  geom_boxplot(fill = "plum") + ggtitle("Career Walks")
+
+g4 <- ggplot(Hitters_scaled, aes(x = SalaryLevel5, y = CAtBat)) + 
+  geom_boxplot(fill = "salmon") + ggtitle("Career At-Bats")
+
+grid.arrange(g1, g2, g3, g4, ncol = 2)
+```
+
+## e. Fit the Multinomial Logistic Regression Model (Full Model)
+
+Now that we've carefully prepared and explored our dataset, we're ready to fit our first predictive model 😎.
+Given that our target variable `SalaryLevel5` is a categorical outcome with five levels, we use a **multinomial logistic regression** to model the relationship between a player's performance stats and its salary category.
+We'll start with a **full model** including all available predictors.
+
+After fitting the full model, we obtain a set of coefficients for each salary level.
+These coefficients represent the change in the log-odds of being in a given salary level compared to the *"Low"* baseline, for a one-unit change in each predictor.
+We notice that some variables (`AtBat`, `Hits`, `CHmRun`, `CRuns`, & `Salary`) have **larger coefficients** for the higher salary categories, particularly "High", which is consistent with previous observations.
+😜 However, some predictors show very **large or unstable coefficients**, suggesting potential **multicollinearity** or overfitting, especially since the **standard errors** are also large in certain cases.
+This is something we’ll address with later chunks of code.
+Lastly, the **AIC = 168.4** and **Residual Deviance = 0.3979** are useful benchmarks for comparing this full model to reduced or regularized versions later on.
+
+```{r final-multinom-model, message=FALSE, warning=FALSE}
+library(nnet)
+
+Hitters_clean$SalaryLevel5 <- Hitters_scaled$SalaryLevel5
+
+# Fit multinomial logistic regression
+full_model <- multinom(SalaryLevel5 ~ ., data = Hitters_clean, trace = TRUE)
+
+# Summary output
+summary(full_model)
+```
+
+## f. Model evaluation
+
+The appropriate error metric is the **misclassification rate**, which is calculated as:
+
+$$
+\text{Misclassification Rate} = 1 - \left( \frac{\text{Number of Correct Predictions}}{\text{Total Number of Predictions}} \right) = 1 - \text{Accuracy}
+$$
+
+This measure reflects the proportion of observations for which the model predicts the wrong salary category.
+A lower misclassification rate indicates better model performance.
+
+### Select Random CV Method
+
+Here, as requested, we select randomly an evaluation method among the ones proposed.
+
+The seed is set to be the birthday of **R-senalofData\$FrancescoCosta**.🍾🎂
+
+```{r cv-method-selection}
+
+set.seed(10102004)
+cv_methods <- c("1. Vanilla validation set", "2. LOO-CV", 
+                "3. K-fold CV (with K = 5)", "4. K-fold CV (with K = 10)")
+sample(cv_methods, 1)
+```
+
+### Model Evaluation: K-fold CV (K = 10)
+
+In **K-fold CV**, we split the data into **k equal parts**.
+The model is trained on **k-1 folds** and tested on the remaining one.
+This process repeats **k times**, each time using a different fold as the test set.
+The **average error** across all folds gives us an estimate of model performance.
+The model achieves a **moderate overall accuracy of around 55%**, performing decently.
+It classifies the lowest and highest salary levels relatively well but struggles with intermediate classes, particularly class 3.
+This suggests **some overlap in feature patterns across adjacent salary levels**, indicating room for improvement through feature refinement or alternative modeling approaches.
+📉📉😣
+
+```{r k10-cv-cleaned, message=FALSE, warning=FALSE}
+library(caret)
+
+Hitters_cv <- Hitters_clean
+Hitters_cv$SalaryLevel5 <- Hitters_clean$SalaryLevel5
+Hitters_cv$Salary <- NULL  # Drop Salary to prevent leakage
+
+set.seed(10102004)
+n_folds <- 10
+folds <- sample(rep(1:n_folds, length.out = nrow(Hitters_cv)))
+fold_errors <- numeric(n_folds)
+
+# Initialize vectors to collect predictions
+true_labels <- c()
+pred_labels <- c()
+
+for (k in 1:n_folds) {
+  # Split data
+  train_data <- Hitters_cv[folds != k, ]
+  test_data  <- Hitters_cv[folds == k, ]
+  
+  model_k <- multinom(SalaryLevel5 ~ ., data = train_data, trace = FALSE)
+  preds <- predict(model_k, newdata = test_data)
+  
+  # Store predictions
+  true_labels <- c(true_labels, test_data$SalaryLevel5)
+  pred_labels <- c(pred_labels, preds)
+  
+  # Fold error
+  fold_errors[k] <- mean(preds != test_data$SalaryLevel5)
+}
+
+# Final CV error
+mean_k10_error <- mean(fold_errors)
+mean_k10_error
+
+
+# Confusion matrix
+conf_matrix <- confusionMatrix(as.factor(pred_labels), as.factor(true_labels))
+conf_matrix
+```
+
+### Model Evaluation: Vanilla Validation Set
+
+In **Vanilla validation**, we randomly split the dataset into **two parts**: a **training set** and a **test set**.
+We train the model once on the training data and evaluate it on the test set.
+It’s quick and simple, but results can vary depending on the split.
+The vanilla model achieves an accuracy of **56.3%**, slightly better than the cross-validated model.
+It performs best on the **Low** and **High** salary classes (sensitivities of 93% and 80%, respectively), but struggles with **Medium** and **MediumLow**, reflecting moderate confusion among adjacent classes.
+Overall, the model shows acceptable performance with room for improvement, especially in distinguishing mid-range salary levels.
+📉
+
+```{r vanilla-validation-corrected, message=FALSE, warning=FALSE}
+
+Hitters_vanilla <- Hitters_clean
+Hitters_vanilla$SalaryLevel5 <- Hitters_clean$SalaryLevel5
+Hitters_vanilla$Salary <- NULL
+
+set.seed(10102004)
+train_indices <- sample(1:nrow(Hitters_vanilla), size = 0.7 * nrow(Hitters_vanilla))
+train_data <- Hitters_vanilla[train_indices, ]
+test_data  <- Hitters_vanilla[-train_indices, ]
+
+vanilla_model <- multinom(SalaryLevel5 ~ ., data = train_data, trace = FALSE)
+
+# Predict on test set
+vanilla_preds <- predict(vanilla_model, newdata = test_data)
+
+# Compute misclassification rate
+vanilla_error <- mean(vanilla_preds != test_data$SalaryLevel5)
+vanilla_error
+
+# Confusion matrix
+vanilla_conf_matrix <- confusionMatrix(
+  as.factor(vanilla_preds),
+  as.factor(test_data$SalaryLevel5)
+)
+
+vanilla_conf_matrix
+```
+
+## g. Fit the Multinomial Logistic Regression Model (Reduced Model)
+
+While our full model performs quite well, it includes all available predictors, some of which may be redundant or only marginally informative.
+In this section, we aim to simplify the model by selecting a **subset of the most relevant features**, with the goal of improving overall accuracy.\
+We explore two different techniques: a **manual selection** of variables based on the correlation matrix and a **stepwise AIC-based selection**.
+We finally evaluate the reduced models using the same cross-validation strategies adopted earlier.
+Let’s see if less can be more!
+🧠
+
+### Feature Selection
+
+We plot again the correlation matrix, including the *log-scaled salary variable* to identify possible redundancies of information given by highly correlated variables.
+
+```{r full-correlation-matrix, message=FALSE, warning=FALSE, fig.width=10, fig.height=8}
+
+Hitters_corr <- Hitters_clean
+Hitters_corr$LogSalary <- log(Hitters_corr$Salary)
+
+num_vars <- sapply(Hitters_corr, is.numeric)
+corr_matrix <- cor(Hitters_corr[, num_vars], use = "complete.obs")
+
+# Correlation Matrix
+corrplot(corr_matrix, method = "color", type = "upper",
+         addCoef.col = "black", tl.cex = 0.8, number.cex = 0.7,
+         mar = c(0,0,1,0), diag = TRUE)
+```
+
+Here we create a reduced dataset that ignores irrelevant features.
+As you can see we end up with a dataset containing only 9 predictors.
+
+```{r create-reduced-dataset, message=FALSE, warning=FALSE}
+
+# Create the reduced dataset from the clean version
+Hitters_reduced <- Hitters_clean
+Hitters_reduced$SalaryLevel5 <- Hitters_scaled$SalaryLevel5
+
+# Define reduced formula with selected predictors
+reduced_formula <- SalaryLevel5 ~ CRuns + CHmRun + Years + Walks + PutOuts +
+                                 League + Division + NewLeague
+
+str(Hitters_reduced[, all.vars(reduced_formula)])
+```
+
+### Fitting a reduced model
+
+Looking at the results a few patterns emerge.
+For example, `CRuns` and `Walks` display **consistently positive coefficients across all salary levels**, indicating that players with more career runs or walks tend to be associated with higher salary categories.
+On the other hand, variables like `NewLeagueN` or `DivisionW` show mixed or even negative effects.
+The **standard errors** help us get a sense of reliability.
+Lastly, the **model’s AIC** stands at **690.77**, which, although higher than the full model’s AIC, is acceptable given the trade-off we’ve made: a model that is simpler, easier to explain, and less prone to *overfitting*.
+
+```{r fit-reduced-model, message=FALSE, warning=FALSE}
+
+# Fit the reduced model on the full dataset
+reduced_model <- multinom(reduced_formula, data = Hitters_reduced, trace = TRUE)
+
+summary(reduced_model)
+```
+
+### Evaluating the manually reduced model
+
+Overall, after manually reducing the dataset we weren't able to improve model accuracy leading to an even worse score for both evaluation methods.
+
+```{r reduced-model-kfold, message=FALSE, warning=FALSE}
+
+set.seed(10102004)
+n_folds <- 10
+folds <- sample(rep(1:n_folds, length.out = nrow(Hitters_reduced)))
+fold_errors_red <- numeric(n_folds)
+
+Hitters_reduced$Salary <- NULL
+
+for (k in 1:n_folds) {
+  train_data <- Hitters_reduced[folds != k, ]
+  test_data  <- Hitters_reduced[folds == k, ]
+  
+  model_red <- multinom(reduced_formula, data = train_data, trace = FALSE)
+  preds <- predict(model_red, newdata = test_data)
+  
+  # Misclassification rate
+  fold_errors_red[k] <- mean(preds != test_data$SalaryLevel5)
+}
+
+mean_k10_error_reduced <- mean(fold_errors_red)
+mean_k10_error_reduced
+```
+
+```{r reduced-model-vanilla, message=FALSE, warning=FALSE}
+
+Hitters_red_vanilla <- Hitters_reduced
+Hitters_red_vanilla$Salary <- NULL
+
+set.seed(10102004)
+train_idx_red <- sample(1:nrow(Hitters_red_vanilla), size = 0.7 * nrow(Hitters_red_vanilla))
+train_data_red <- Hitters_red_vanilla[train_idx_red, ]
+test_data_red  <- Hitters_red_vanilla[-train_idx_red, ]
+
+# Fit and predict
+model_red_vanilla <- multinom(reduced_formula, data = train_data_red, trace = FALSE)
+preds_red_vanilla <- predict(model_red_vanilla, newdata = test_data_red)
+
+# Misclassification rate
+vanilla_error_red <- mean(preds_red_vanilla != test_data_red$SalaryLevel5)
+vanilla_error_red
+```
+
+### Trying a different approach
+
+For our second technique, we adopt a **backward selection** which works as follows: the process begins with all predictors and at each step removes the one whose exclusion most improves the AIC.
+This iterative process continues until no further improvement is possible.
+
+The second output shows the coefficients of the final model fitted on the selected variables.
+The model still includes strong predictors like:
+
+-   `Hits, HmRun, Runs, Walks`, all intuitively linked to performance.
+-   `Years`, a synonym for experience.
+-   `CRuns and CWalks`, cumulative stats that are particularly informative.
+-   `Division`, one of the only categorical variables retained.
+-   `Errors`, interestingly kept although not statistically significant.
+
+The plot shows how the model improves step-by-step as we drop variables that don’t contribute meaningfully to the prediction of `SalaryLevel5`.
+We started with **all predictors** and ended up dropping 10 variables (`CRBI`, `CHmRun`, `CAtBat`, `CHits`, `League`, `NewLeague`, `Assists`, `RBI`, `AtBat`, and finally `PutOuts`).
+Each removal brought a consistent **decrease in AIC**, which confirms that these variables added noise rather than predictive power.
+
+```{r vglm-backward-loop, message=FALSE, warning=FALSE}
+library(VGAM)
+
+Hitters_step <- Hitters_clean
+Hitters_step$SalaryLevel5 <- Hitters_scaled$SalaryLevel5  # use clustered levels
+Hitters_step$Salary <- NULL  # remove to avoid leakage
+
+Hitters_step$SalaryLevel5 <- factor(Hitters_step$SalaryLevel5,
+                                    levels = c("Low", "MediumLow", "Medium", "MediumHigh", "High"))
+
+# Initial variable list and full model
+predictors <- names(Hitters_step)[names(Hitters_step) != "SalaryLevel5"]
+best_formula <- as.formula(paste("SalaryLevel5 ~", paste(predictors, collapse = " + ")))
+best_model <- vglm(best_formula, family = multinomial, data = Hitters_step)
+best_aic <- AIC(best_model)
+
+# Store the AIC path
+aic_path <- data.frame(Step = 0, Dropped = "None", AIC = best_aic)
+
+improvement <- TRUE
+step <- 1
+
+while (improvement) {
+  current_aics <- data.frame(Variable = predictors, AIC = NA)
+  
+  for (var in predictors) {
+    trial_vars <- setdiff(predictors, var)
+    trial_formula <- as.formula(paste("SalaryLevel5 ~", paste(trial_vars, collapse = " + ")))
+    trial_model <- vglm(trial_formula, family = multinomial, data = Hitters_step)
+    current_aics[current_aics$Variable == var, "AIC"] <- AIC(trial_model)
+  }
+  
+  # Identify variable whose removal reduces AIC the most
+  min_aic <- min(current_aics$AIC)
+  best_drop <- current_aics$Variable[which.min(current_aics$AIC)]
+  
+  if (min_aic < best_aic) {
+    # Update predictors and AIC
+    predictors <- setdiff(predictors, best_drop)
+    best_aic <- min_aic
+    aic_path <- rbind(aic_path, data.frame(Step = step, Dropped = best_drop, AIC = best_aic))
+    step <- step + 1
+  } else {
+    improvement <- FALSE
+  }
+}
+
+# Final model
+final_formula <- as.formula(paste("SalaryLevel5 ~", paste(predictors, collapse = " + ")))
+final_model <- vglm(final_formula, family = multinomial, data = Hitters_step)
+
+# Output AIC path and final model
+print(aic_path)
+summary(final_model)
+```
+
+```{r AIC-path}
+# AIC reduction path
+ggplot(aic_path, aes(x = Step, y = AIC)) +
+  geom_line(color = "#0072B2", linewidth = 1.2) +
+  geom_point(size = 3, color = "#D55E00") +
+  geom_text(aes(label = Dropped), vjust = -0.7, size = 3) +
+  labs(title = "Backward Selection – AIC Reduction Path",
+       x = "Step", y = "AIC") +
+  theme_minimal()
+```
+
+### K-fold CV
+
+Finally, we test the stepwise reduced model with K-fold CV and we notice that it slightly improves, approaching a **60% Accuracy score**.
+📈📈😊
+
+```{r final-backward-model-k10, message=FALSE, warning=FALSE}
+
+final_predictors <- all.vars(final_formula)[-1]
+
+Hitters_eval <- Hitters_clean
+Hitters_eval$SalaryLevel5 <- Hitters_scaled$SalaryLevel5
+Hitters_eval$Salary <- NULL
+
+set.seed(10102004)
+n_folds <- 10
+folds <- sample(rep(1:n_folds, length.out = nrow(Hitters_eval)))
+fold_errors_final <- numeric(n_folds)
+
+num_vars <- sapply(Hitters_eval, is.numeric)
+exclude <- c("Salary", "LogSalary")
+vars_to_scale <- intersect(final_predictors, names(Hitters_eval)[num_vars])
+
+for (k in 1:n_folds) {
+  train_data <- Hitters_eval[folds != k, ]
+  test_data  <- Hitters_eval[folds == k, ]
+  
+  for (var in vars_to_scale) {
+    mean_train <- mean(train_data[[var]])
+    sd_train   <- sd(train_data[[var]])
+    train_data[[var]] <- (train_data[[var]] - mean_train) / sd_train
+    test_data[[var]]  <- (test_data[[var]] - mean_train) / sd_train
+  }
+  
+  model_k <- multinom(final_formula, data = train_data, trace = FALSE)
+  preds <- predict(model_k, newdata = test_data)
+  fold_errors_final[k] <- mean(preds != test_data$SalaryLevel5)
+}
+
+mean_k10_error_final <- mean(fold_errors_final)
+mean_k10_error_final
+```
+
+### Vanilla Validation
+
+Unfortunately, even with a different approach the Vanilla Validation method doesn't bless us with better results.
+😭
+
+```{r final-backward-model-vanilla, message=FALSE, warning=FALSE}
+set.seed(10102004)
+train_idx_final <- sample(1:nrow(Hitters_eval), size = 0.7 * nrow(Hitters_eval))
+train_data_final <- Hitters_eval[train_idx_final, ]
+test_data_final  <- Hitters_eval[-train_idx_final, ]
+
+for (var in vars_to_scale) {
+  mean_train <- mean(train_data_final[[var]])
+  sd_train   <- sd(train_data_final[[var]])
+  train_data_final[[var]] <- (train_data_final[[var]] - mean_train) / sd_train
+  test_data_final[[var]]  <- (test_data_final[[var]] - mean_train) / sd_train
+}
+
+# Fit and predict
+model_vanilla_final <- multinom(final_formula, data = train_data_final, trace = FALSE)
+preds_vanilla_final <- predict(model_vanilla_final, newdata = test_data_final)
+
+# Misclassification rate
+vanilla_error_final <- mean(preds_vanilla_final != test_data_final$SalaryLevel5)
+vanilla_error_final
+```
+
+## Conclusions
+
+In the end we notice that all models hovered around a **40–45% misclassification rate**, meaning that more than half the salary level predictions are correct.
+In particular:
+
+-   The **Full Model** offers solid baseline performance but is potentially overfitting.
+
+-   The **Reduced Model** shows comparable results with fewer variables
+
+-   The **Backward Stepwise Model** gives us a nice middle ground, achieving better accuracy while offering a data-driven path to variable selection.
+
+While none of the models achieve very high predictive accuracy, this is understandable considering the complexity of salary dynamics in professional sports, which are likely influenced by many unobserved factors like *fame*, *marketability*, *contract history*.
+Nevertheless, the models we built perform significantly better than the baseline, and offer meaningful insights into which performance metrics tend to correlate with higher salaries.
+This project highlights the trade-offs between model complexity, interpretability, and performance.
+Finally, it demonstrates the value of model selection techniques in improving predictive accuracy without unnecessary complication.
+
+```{r model-comparison-dynamic, echo=TRUE, message=FALSE}
+
+model_comparison <- data.frame(
+  Model_Version = c("Full Model", "Full Model",
+                   "Reduced Model", "Reduced Model",
+                   "Backward Stepwise", "Backward Stepwise"),
+  Validation_Method = c("10-fold CV", "Vanilla Validation",
+                       "10-fold CV", "Vanilla Validation",
+                       "10-fold CV", "Vanilla Validation"),
+  Misclassification_Rate = c(mean_k10_error,
+                            vanilla_error,
+                            mean_k10_error_reduced,
+                            vanilla_error_red,
+                            mean_k10_error_final,
+                            vanilla_error_final)
+)
+
+# Display the table
+knitr::kable(model_comparison, caption = "Model Performance Comparison")
+```
